@@ -5,15 +5,16 @@ the cut positions.
 
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections     #-}
+{-# LANGUAGE RecordWildCards   #-}
 
 module Main where
 
 import           Prelude hiding (FilePath)
-import qualified Control.Foldl as Fold
 import           Control.Error
+import qualified Data.ByteString.Char8    as BS
 import           Data.Foldable
+import           Data.Function            (on)
 import qualified Data.List as List
-import qualified Data.Map as Map
 import qualified Data.Text as T
 import           Data.Time
 import           Filesystem.Path.CurrentOS hiding (empty)
@@ -21,32 +22,26 @@ import           Turtle
 
 
 ------------------------------------------------------------------------------
-optsParser :: Parser (FilePath,FilePath,FilePath,Double,Double)
-optsParser = (,,,,) <$> optPath   "input"     'i' "Input video"
-                    <*> optPath   "cuts"      'c' "Input cuts file"
-                    <*> optPath   "output"    'o' "Output directory"
-                    <*> optDouble "framerate" 'f' "Video frame rate"
-                    <*> optDouble "bitesize"  'b' "Size of intermediate chunks"
-
-------------------------------------------------------------------------------
-nameLength :: Int
-nameLength = 7
+data Opts = Opts
+  { oInput     :: FilePath
+  , oCuts      :: FilePath
+  , oOutputDir :: FilePath
+  , oFPS       :: Double
+  , oBiteSize  :: Double
+  } deriving (Show)
 
 
 ------------------------------------------------------------------------------
-clipBites :: Double -> Double -> [Int] -> Map.Map Int (Int,Int)
-clipBites fps biteSize clipFrames =
-  let framesPerBite = ceiling $ biteSize * fps
-      binIndex c    = c `div` framesPerBite
-      clips         = zip clipFrames (tail clipFrames)
-      clipGroups    = List.groupBy
-                      (\(s1,_) (s2,_) -> binIndex s1 == binIndex s2) clips
-      groupBite gr  = (Prelude.minimum (map fst gr),
-                       Prelude.maximum (map snd gr))
-      cBites        = concatMap
-                      (\gr -> map (\c -> (fst c, groupBite gr)) gr)
-                      clipGroups
-  in  Map.fromList cBites
+clipBites :: Double -> Double -> [(Int,Int)] -> [((Int,Int), (Int,Int))]
+clipBites fps biteSize clips =
+  let framesPerBite  = floor $ biteSize * fps :: Int
+      binIndex (c,_)   = c `div` framesPerBite
+      clipGroups       = List.groupBy ((==) `on` binIndex) clips
+      groupBite gr     = (Prelude.minimum (map fst gr),
+                          Prelude.maximum (map snd gr))
+      groupsAndBites   = zip clipGroups (map groupBite clipGroups)
+      cBites           = concatMap (\(cs, gr) -> map (,gr) cs) groupsAndBites
+  in  cBites
 
 
 ------------------------------------------------------------------------------
@@ -69,15 +64,12 @@ toDir inFile targetDir = directory targetDir </> filename inFile
 
 -------------------------------------------------------------------------------
 -- | Filename for given video clip
-clipFiles :: Map.Map Int (Int,Int)
-          -> (Int,Int)
+clipFiles :: ((Int,Int), (Int,Int))
           -> FilePath
           -> FilePath
           -> (FilePath, FilePath)
-clipFiles bitesDB fs baseName outDir =
-  let (bS,bE)  = fromMaybe (error $ "Bite db lookup error: " ++ show (fst fs))
-                 $ Map.lookup (fst fs) bitesDB
-      inFile   = biteFile (bS,bE) baseName outDir
+clipFiles (fs, (bS,bE)) baseName outDir =
+  let inFile   = biteFile (bS,bE) baseName outDir
       outFile  = outDir </> toFileName (filename baseName) fs
   in  (inFile, outFile)
 
@@ -92,7 +84,7 @@ biteFile fs baseName outDir =
 ------------------------------------------------------------------------------
 extractFrames :: Double -> (Int,Int) -> FilePath -> FilePath -> IO ()
 extractFrames fps (frameStart, frameEnd) inFile outFile = do
-  let cmd     = T.unwords ["ffmpeg -i"
+  let cmd     = T.unwords ["ffmpeg -v 1 -i"
                           ,either (const "") id (toText inFile)
                           ,"-ss " <> toTimestamp fps frameStart
                           -- ,"-c copy" -- The copy command will seek to the
@@ -106,7 +98,7 @@ extractFrames fps (frameStart, frameEnd) inFile outFile = do
   return ()
 
 
-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
 toFileName :: FilePath
            -- ^ Input video file, e.g. "HomeAlone.mp4"
            -> (Int,Int)
@@ -119,7 +111,7 @@ toFileName movieName (_, frameEnd) =
 
 
 
-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
 toTimestamp :: Double -> Int -> T.Text
 toTimestamp fps nframe =
   let secs = fromIntegral nframe / fps :: Double
@@ -128,27 +120,67 @@ toTimestamp fps nframe =
   in  T.take 12 . T.pack $ formatTime defaultTimeLocale "%H:%M:%S.%q" t
 
 
-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
 main :: IO ()
 main = do
-  (inFile,cutFile,outDir,fps,byteSize) <- options "Break video into files" optsParser
+  op@Opts{..} <- options "Break video into files" optsParser
+  validateOpts op
   do
-    cutFrames <- (0:) <$> Turtle.fold (getTimes cutFile) Fold.list
-    let bitesDB = clipBites fps byteSize cutFrames
+    cutFrames <- (0:) <$> getCutFrames oCuts
+    let clipBounds = zip cutFrames (tail cutFrames)
+        bitesDB = clipBites oFPS oBiteSize clipBounds :: [((Int,Int), (Int,Int))]
 
-    mktree $ outDir </> "tmp"
-    forM_ (List.nub $ Map.elems bitesDB) $ \(b0,bN) ->
-      let outFile = biteFile (b0, bN) inFile outDir
-      in  extractFrames fps (b0,bN) inFile outFile
+    mktree oOutputDir
+    mkdir $ oOutputDir </> "tmp"
 
-    forM_ (zip (0:cutFrames) cutFrames) $ \fs@(cS,cE) ->
-      let (clipIn, clipOut) = clipFiles bitesDB fs inFile outDir
-          (bS, _)          = fromMaybe (error "Bad clip lookup")
-                              (Map.lookup (fst fs) bitesDB)
-      in  extractFrames fps (cS - bS, cE - bS) clipIn clipOut
+    forM_ (List.nub $ map snd bitesDB) $ \(b0,bN) -> do
+      let outFile = biteFile (b0, bN) oInput oOutputDir
+      putStrLn $ unwords ["Processing byte:", show (b0,bN)]
+      extractFrames oFPS (b0,bN) oInput outFile
+
+    forM_ bitesDB $ \((cS,cE),(bS,bE)) -> do
+      let (clipIn, clipOut) = clipFiles ((cS,cE),(bS,bE)) oInput oOutputDir
+      putStrLn $ unwords ["Processing clip", show clipIn, "from bite", show (bS,bE)]
+      extractFrames oFPS (cS - bS, cE - bS) clipIn clipOut
   echo "Done!"
 
 
+-------------------------------------------------------------------------------
+validateOpts :: Opts -> IO ()
+validateOpts Opts{..} = do
+  cuts <- getCutFrames oCuts
+  let lengths = zipWith (-) (tail cuts) cuts
+  when (List.sort cuts /= cuts)
+    (error "Frames in cut file should be sorted")
+  when (any (< 1) lengths)
+    (error "All clips should be at least 1 frame long")
+  return ()
+
+-------------------------------------------------------------------------------
+getCutFrames :: FilePath -> IO [Int]
+getCutFrames cuts =
+  map (read . BS.unpack) . BS.lines <$> BS.readFile (encodeString cuts)
+
+
 ------------------------------------------------------------------------------
-getTimes :: FilePath -> Shell Int
-getTimes = fmap (read . T.unpack) . input
+optsParser :: Parser Opts
+optsParser = Opts <$> optPath   "input"     'i' "Input video"
+                  <*> optPath   "cuts"      'c' "Input cuts file"
+                  <*> optPath   "output"    'o' "Output directory"
+                  <*> optDouble "framerate" 'f' "Video frame rate"
+                  <*> optDouble "bitesize"  'b' "Size of intermediate chunks"
+
+
+------------------------------------------------------------------------------
+nameLength :: Int
+nameLength = 7
+
+
+------------------------------------------------------------------------------
+testOpts :: Opts
+testOpts = Opts
+           "/Users/greghale/Documents/Video/HomeAlone2/Home_Alone_2_PG.mp4"
+           "/Users/greghale/Documents/Video/HomeAlone2/cuts.txt"
+           "/Users/greghale/Documents/Video/HomeAlone2/try3"
+           23.978
+           120

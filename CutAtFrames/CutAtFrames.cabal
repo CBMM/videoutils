@@ -21,6 +21,7 @@ executable CutAtFrames
   -- other-modules:
   -- other-extensions:
   build-depends:       base >=4.8 && <4.9
+                     , bytestring
                      , containers
                      , system-filepath
                      , foldl

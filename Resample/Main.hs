@@ -38,14 +38,13 @@ main = do
       outTmp      = tmpDir opts </> "outframes"
   makeClean (inTmp)
   makeClean (outTmp)
+  touch (quietFile opts)
   rm (quietFile opts)
+  touch (tmpDir opts </> "sound.wav")
   rm (tmpDir opts </> "sound.wav")
   vidToFrames opts
-  print "About to GetDir"
   inFrms  <- filter ((==".png") . takeExtension) <$> getDirectoryContents (encodeString inTmp)
-  print $ "inFrms is: " ++ show inFrms
   let outFrms = filter (> 0) $ outputFrameNums opts (length inFrms)
-  print outFrms
   forM_ (zip outFrms [0..]) $ \(iIn, iOut) -> 
     copyFile (encodeString $ inTmp </> toFileName iIn) (encodeString $ outTmp </> toFileName iOut)
   framesToVid opts 
