@@ -141,7 +141,7 @@ main = do
     forM_ bitesDB $ \((cS,cE),(bS,bE)) -> do
       let (clipIn, clipOut) = clipFiles ((cS,cE),(bS,bE)) oInput oOutputDir
       putStrLn $ unwords ["Processing clip", show clipIn, "from bite", show (bS,bE)]
-      extractFrames oFPS (cS - bS, cE - bS) clipIn clipOut
+      extractFrames oFPS (cS - bS + 1, cE - bS) clipIn clipOut -- TODO the +1 here is a hack
   echo "Done!"
 
 
@@ -173,7 +173,7 @@ optsParser = Opts <$> optPath   "input"     'i' "Input video"
 
 ------------------------------------------------------------------------------
 nameLength :: Int
-nameLength = 7
+nameLength = 8
 
 
 ------------------------------------------------------------------------------
