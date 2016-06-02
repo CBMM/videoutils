@@ -14,6 +14,7 @@ module Main where
 import           Prelude hiding (FilePath)
 import qualified Control.Foldl as Fold
 import           Control.Error
+import qualified Data.ByteString.Char8 as BS
 import           Data.Foldable
 import qualified Data.List as List
 import qualified Data.Map as Map
@@ -67,7 +68,7 @@ bringAudio opts@Opts{..} =
 
 
 quietFile :: Opts -> FilePath
-quietFile Opts{..} = tmpDir </> (decode . T.pack $ addExtension "quiet" (takeExtension $ encodeString outFile))
+quietFile Opts{..} = tmpDir </> (decode . BS.pack $ addExtension "quiet" (takeExtension $ encodeString outFile))
 
 
 ------------------------------------------------------------------------------

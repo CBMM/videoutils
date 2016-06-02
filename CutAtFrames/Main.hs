@@ -91,6 +91,7 @@ extractFrames fps (frameStart, frameEnd) inFile outFile = do
                                         -- nearest keyframe. A no-no for
                                         -- short clips like ours
                           ,"-t " <> toTimestamp fps (frameEnd - frameStart)
+                          ,"-strict -2 -b:v 2M"
                           ,either (const "") id (toText outFile)
                           ]
   echo cmd
